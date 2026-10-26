@@ -5,3 +5,5 @@ edition = "2024"
 
 [dependencies]
 libcosmic = { git = "https://github.com/pop-os/libcosmic", default-features = false, features = ["applet-token", "dbus-config"] }
+serde_json = "1"
+tokio = { version = "1", features = ["process", "io-util", "time"] }
