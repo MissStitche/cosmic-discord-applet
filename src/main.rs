@@ -24,6 +24,8 @@ struct Applet {
     volume_en_cours: Option<(String, f32)>,
     /// Curseur lâché : on garde sa valeur affichée jusqu'au prochain état du pont (sinon il « saute »).
     volume_relache: bool,
+    /// Personne dont on affiche le curseur de volume (clic sur son nom).
+    personne_ouverte: Option<String>,
     /// Heure actuelle (secondes depuis 1970), pour la durée de l'appel.
     maintenant: i64,
 }
@@ -35,6 +37,7 @@ enum Message {
     Pont(Option<Etat>),
     /// Commande pour le pont, ex. ["set_mute", "true"].
     Commande(Vec<String>),
+    OuvrirPersonne(String),
     Volume(String, f32),
     VolumeRelache,
     OuvrirDansDiscord,
@@ -91,6 +94,9 @@ impl cosmic::Application for Applet {
                     pont::commande(arguments).await;
                     Message::Rien
                 });
+            }
+            Message::OuvrirPersonne(id) => {
+                self.personne_ouverte = if self.personne_ouverte.as_ref() == Some(&id) { None } else { Some(id) };
             }
             Message::Volume(id, valeur) => {
                 self.volume_en_cours = Some((id, valeur));
@@ -171,7 +177,7 @@ impl cosmic::Application for Applet {
                         settings
                     },
                     Some(Box::new(|state: &Applet| {
-                        let contenu = container(vue::panneau(state)).width(Length::Fixed(380.0)).padding(4);
+                        let contenu = container(vue::panneau(state)).width(Length::Fill).padding(8);
                         Element::from(state.core.applet.popup_container(contenu)).map(cosmic::Action::App)
                     })),
                 )),
