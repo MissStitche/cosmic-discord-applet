@@ -1,15 +1,16 @@
 //! Applet COSMIC du widget Discord : une icône dans le panneau qui ouvre une fenêtre.
 
 mod pont;
+mod vue;
 
 use cosmic::app::{Core, Task};
 use cosmic::iced::window::Id;
-use cosmic::iced::{Alignment, Rectangle, Subscription};
+use cosmic::iced::{Length, Rectangle, Subscription};
 use cosmic::surface::action::{app_popup, destroy_popup};
-use cosmic::iced::widget::{Column, Row};
-use cosmic::widget::{button, icon, text};
+use cosmic::widget::container;
 use cosmic::Element;
 use pont::Etat;
+use std::time::Duration;
 
 const ID: &str = "fr.chloe.CosmicDiscordApplet";
 
@@ -19,6 +20,12 @@ struct Applet {
     popup: Option<Id>,
     /// Dernier état envoyé par le pont (None tant qu'il n'a rien dit).
     etat: Option<Etat>,
+    /// Curseur de volume en cours de glissement : (id de la personne, "" = mon micro ; valeur).
+    volume_en_cours: Option<(String, f32)>,
+    /// Curseur lâché : on garde sa valeur affichée jusqu'au prochain état du pont (sinon il « saute »).
+    volume_relache: bool,
+    /// Heure actuelle (secondes depuis 1970), pour la durée de l'appel.
+    maintenant: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -26,8 +33,20 @@ enum Message {
     PopupClosed(Id),
     Surface(cosmic::surface::Action<Message>),
     Pont(Option<Etat>),
-    Autoriser,
+    /// Commande pour le pont, ex. ["set_mute", "true"].
+    Commande(Vec<String>),
+    Volume(String, f32),
+    VolumeRelache,
+    OuvrirDansDiscord,
+    LancerDiscord,
+    Seconde,
     Rien,
+}
+
+fn maintenant() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 impl cosmic::Application for Applet {
@@ -45,7 +64,7 @@ impl cosmic::Application for Applet {
     }
 
     fn init(core: Core, _flags: ()) -> (Self, Task<Message>) {
-        (Applet { core, ..Default::default() }, Task::none())
+        (Applet { core, maintenant: maintenant(), ..Default::default() }, Task::none())
     }
 
     fn on_close_requested(&self, id: Id) -> Option<Message> {
@@ -60,20 +79,64 @@ impl cosmic::Application for Applet {
                 }
             }
             Message::Surface(a) => return cosmic::task::message(cosmic::Action::Surface(a)),
-            Message::Pont(etat) => self.etat = etat,
-            Message::Autoriser => {
-                return cosmic::task::future(async {
-                    pont::commande(&["authorize"]).await;
+            Message::Pont(etat) => {
+                self.etat = etat;
+                if self.volume_relache {
+                    self.volume_en_cours = None;
+                    self.volume_relache = false;
+                }
+            }
+            Message::Commande(arguments) => {
+                return cosmic::task::future(async move {
+                    pont::commande(arguments).await;
                     Message::Rien
                 });
             }
+            Message::Volume(id, valeur) => {
+                self.volume_en_cours = Some((id, valeur));
+                self.volume_relache = false;
+            }
+            // On n'envoie le volume qu'au lâcher (sinon une commande à chaque pixel)
+            Message::VolumeRelache => {
+                if let Some((id, valeur)) = self.volume_en_cours.clone() {
+                    self.volume_relache = true;
+                    let valeur = (valeur.round() as i64).to_string();
+                    let arguments = if id.is_empty() {
+                        vec!["set_mic_volume".into(), valeur]
+                    } else {
+                        vec!["set_user_volume".into(), id, valeur]
+                    };
+                    return self.update(Message::Commande(arguments));
+                }
+            }
+            Message::OuvrirDansDiscord => {
+                if let Some(salon) = self.etat.as_ref().and_then(|e| e.salon.as_ref()) {
+                    let serveur = if salon.serveur_id.is_empty() { "@me" } else { &salon.serveur_id };
+                    pont::lancer("xdg-open", &[&format!("discord://-/channels/{serveur}/{}", salon.id)]);
+                }
+            }
+            // Discord en Flatpak, sinon installé normalement
+            Message::LancerDiscord => {
+                pont::lancer(
+                    "sh",
+                    &["-c", "if flatpak info com.discordapp.Discord >/dev/null 2>&1; then flatpak run com.discordapp.Discord; else discord; fi"],
+                );
+            }
+            Message::Seconde => self.maintenant = maintenant(),
             Message::Rien => {}
         }
         Task::none()
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        Subscription::run(pont::ecouter)
+        let en_appel = self.etat.as_ref().is_some_and(|e| e.salon.is_some());
+        // La durée de l'appel n'avance que si la fenêtre est ouverte
+        let horloge = if en_appel && self.popup.is_some() {
+            cosmic::iced::time::every(Duration::from_secs(1)).map(|_| Message::Seconde)
+        } else {
+            Subscription::none()
+        };
+        Subscription::batch([Subscription::run(pont::ecouter), horloge])
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -90,6 +153,7 @@ impl cosmic::Application for Applet {
                     move |state: &mut Applet| {
                         let new_id = Id::unique();
                         state.popup = Some(new_id);
+                        state.maintenant = maintenant();
                         let mut settings = state.core.applet.get_popup_settings(
                             state.core.main_window_id().unwrap(),
                             new_id,
@@ -107,8 +171,8 @@ impl cosmic::Application for Applet {
                         settings
                     },
                     Some(Box::new(|state: &Applet| {
-                        Element::from(state.core.applet.popup_container(state.contenu()))
-                            .map(cosmic::Action::App)
+                        let contenu = container(vue::panneau(state)).width(Length::Fixed(380.0)).padding(4);
+                        Element::from(state.core.applet.popup_container(contenu)).map(cosmic::Action::App)
                     })),
                 )),
             });
@@ -128,56 +192,6 @@ impl cosmic::Application for Applet {
 
     fn style(&self) -> Option<cosmic::iced::theme::Style> {
         Some(cosmic::applet::style())
-    }
-}
-
-impl Applet {
-    /// Contenu de la fenêtre : un message d'état, ou le salon et ses participants.
-    fn contenu(&self) -> Element<'_, Message> {
-        let Some(etat) = &self.etat else {
-            return text::body("Pont Discord introuvable ou arrêté").into();
-        };
-        let message = match etat.status.as_str() {
-            "ready" => None,
-            "discord_unavailable" => Some("Discord n'est pas lancé"),
-            "auth_required" => Some("Autorise l'applet à lire ton vocal Discord"),
-            "authorizing" => Some("Accepte la demande dans Discord…"),
-            _ => Some("Connexion à Discord…"),
-        };
-        if let Some(message) = message {
-            let mut colonne = Column::new().spacing(12).push(text::body(message));
-            if etat.status == "auth_required" {
-                colonne = colonne.push(button::suggested("Autoriser").on_press(Message::Autoriser));
-            }
-            return colonne.into();
-        }
-        let Some(salon) = &etat.salon else {
-            return text::body("Tu n'es pas en vocal").into();
-        };
-        let mut colonne = Column::new()
-            .spacing(8)
-            .push(text::title4(&salon.nom))
-            .push(text::caption(&salon.serveur));
-        for personne in &etat.participants {
-            // Icône : sourdine > muet > parle > rien
-            let nom_icone = if personne.sourd {
-                "audio-volume-muted-symbolic"
-            } else if personne.muet {
-                "microphone-sensitivity-muted-symbolic"
-            } else if personne.parle {
-                "audio-volume-high-symbolic"
-            } else {
-                "user-available-symbolic"
-            };
-            colonne = colonne.push(
-                Row::new()
-                    .spacing(8)
-                    .align_y(Alignment::Center)
-                    .push(icon::from_name(nom_icone).size(16))
-                    .push(text::body(&personne.nom)),
-            );
-        }
-        colonne.into()
     }
 }
 
