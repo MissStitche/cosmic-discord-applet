@@ -17,6 +17,24 @@ fn ligne<'a>() -> Row<'a, Message, cosmic::Theme> {
     Row::new().spacing(8).align_y(Alignment::Center)
 }
 
+/// Liste à séparateurs, avec un fond semi-transparent (celui de COSMIC est opaque
+/// et cacherait la transparence de la fenêtre).
+fn liste<'a>() -> list::ListColumn<'a, Message> {
+    list_column().style(theme::Container::custom(|t| {
+        let cosmic = t.cosmic();
+        let composant = &cosmic.background(false).component;
+        let mut fond: cosmic::iced::Color = composant.base.into();
+        fond.a = 0.5;
+        container::Style {
+            icon_color: Some(composant.on.into()),
+            text_color: Some(composant.on.into()),
+            background: Some(fond.into()),
+            border: Border { radius: cosmic.corner_radii.radius_s.into(), ..Default::default() },
+            ..Default::default()
+        }
+    }))
+}
+
 /// Durée « m:ss » ou « h:mm:ss ».
 fn duree(secondes: i64) -> String {
     let s = secondes.max(0);
@@ -113,7 +131,7 @@ fn en_appel<'a>(applet: &'a Applet, etat: &'a Etat, salon: &'a Salon) -> Element
         ))
         .push(bascule(etat.sourdine, "Casque", "audio-headphones-symbolic", "audio-volume-muted-symbolic", "set_deaf"));
 
-    let mut personnes = list_column();
+    let mut personnes = liste();
     for p in &etat.participants {
         personnes = personnes.add(ligne_personne(applet, etat, p));
         if applet.personne_ouverte.as_deref() == Some(p.id.as_str()) {
@@ -196,7 +214,7 @@ fn hors_appel(etat: &Etat) -> Element<'_, Message> {
     if salons.is_empty() {
         return colonne.into();
     }
-    let mut liste = list_column();
+    let mut salons_liste = liste();
     for salon in salons {
         let detail = if salon.en_ligne > 0 {
             format!("{} · {} en ligne", nom_serveur(salon), salon.en_ligne)
@@ -211,8 +229,8 @@ fn hors_appel(etat: &Etat) -> Element<'_, Message> {
         let rangee = ligne()
             .push(Column::new().width(Length::Fill).push(text::body(&salon.nom)).push(text::caption(detail)))
             .push(etoile);
-        liste = liste.add(list::button(rangee).on_press(commande(&["join_channel", &salon.id])));
+        salons_liste = salons_liste.add(list::button(rangee).on_press(commande(&["join_channel", &salon.id])));
     }
-    colonne = colonne.push(container(cosmic::widget::scrollable(liste)).max_height(400.0));
+    colonne = colonne.push(container(cosmic::widget::scrollable(salons_liste)).max_height(400.0));
     colonne.into()
 }
