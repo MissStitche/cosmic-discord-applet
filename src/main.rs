@@ -40,7 +40,6 @@ enum Message {
     ToggleParticipant(String),
     Volume(String, f32),
     VolumeReleased,
-    OpenInDiscord,
     LaunchDiscord,
     Tick,
     None,
@@ -114,12 +113,6 @@ impl cosmic::Application for Applet {
                         vec!["set_user_volume".into(), id, value]
                     };
                     return self.update(Message::Command(arguments));
-                }
-            }
-            Message::OpenInDiscord => {
-                if let Some(channel) = self.state.as_ref().and_then(|s| s.channel.as_ref()) {
-                    let guild = if channel.guild_id.is_empty() { "@me" } else { &channel.guild_id };
-                    bridge::spawn("xdg-open", &[&format!("discord://-/channels/{guild}/{}", channel.id)]);
                 }
             }
             // Flatpak Discord, otherwise the regular install

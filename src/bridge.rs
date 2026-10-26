@@ -33,7 +33,6 @@ pub struct State {
 pub struct Channel {
     pub id: String,
     pub name: String,
-    pub guild_id: String,
     pub guild_name: String,
     pub online_count: u64,
 }
@@ -65,7 +64,6 @@ fn parse_channel(json: &Value) -> Channel {
     Channel {
         id: string(&json["id"]),
         name: string(&json["name"]),
-        guild_id: string(&json["guild_id"]),
         guild_name: string(&json["guild_name"]),
         online_count: json["participant_count"].as_u64().unwrap_or(0),
     }
@@ -145,7 +143,7 @@ pub async fn command(arguments: Vec<String>) {
     let _ = Command::new(bridge_path()).arg("command").args(arguments).status().await;
 }
 
-/// Starts a program without waiting (open a link, launch Discord).
+/// Starts a program without waiting (launch Discord).
 pub fn spawn(program: &str, arguments: &[&str]) {
     if let Ok(mut child) = std::process::Command::new(program).args(arguments).spawn() {
         std::thread::spawn(move || child.wait()); // avoids a zombie process

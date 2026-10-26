@@ -111,14 +111,11 @@ fn in_call<'a>(applet: &'a Applet, state: &'a State, channel: &'a Channel) -> El
     let hang_up = button::icon(icon::from_name("call-stop-symbolic"))
         .class(theme::Button::Destructive)
         .on_press(command(&["hang_up"]));
-    let open = button::icon(icon::from_name("send-to-symbolic")).on_press(Message::OpenInDiscord);
-    let actions = row().spacing(4).push(open).push(hang_up);
 
     // Highlighted button = muted (like in Quickshell)
     let toggle = |muted: bool, label: &'static str, on_icon: &'static str, off_icon: &'static str, cmd: &'static str| {
         let b = if muted { button::suggested(label) } else { button::standard(label) };
         b.leading_icon(icon::from_name(if muted { off_icon } else { on_icon }))
-            .width(Length::Fill)
             .on_press(command(&[cmd, if muted { "false" } else { "true" }]))
     };
     let mic_and_headset = Row::new()
@@ -131,6 +128,7 @@ fn in_call<'a>(applet: &'a Applet, state: &'a State, channel: &'a Channel) -> El
             "set_mute",
         ))
         .push(toggle(state.deafened, "Casque", "audio-headphones-symbolic", "audio-volume-muted-symbolic", "set_deaf"));
+    let mic_and_headset = container(mic_and_headset).center_x(Length::Fill);
 
     let mut participants = list();
     for p in &state.participants {
@@ -142,7 +140,7 @@ fn in_call<'a>(applet: &'a Applet, state: &'a State, channel: &'a Channel) -> El
 
     Column::new()
         .spacing(12)
-        .push(header("audio-headset-symbolic", true, channel.name.clone(), info, Some(actions.into())))
+        .push(header("audio-headset-symbolic", true, channel.name.clone(), info, Some(hang_up.into())))
         .push(mic_and_headset)
         .push(container(cosmic::widget::scrollable(participants)).max_height(6.0 * 52.0))
         .into()
