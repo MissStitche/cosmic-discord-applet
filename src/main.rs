@@ -320,13 +320,15 @@ impl cosmic::Application for Applet {
                 )),
             });
 
-        Element::from(self.core.applet.applet_tooltip::<Message>(
+        let tooltip = self.core.applet.applet_tooltip::<Message>(
             btn,
             "Discord",
             self.popup.is_some(),
             Message::Surface,
             None,
-        ))
+        );
+        // The panel window grows with the number of avatars (otherwise they get squeezed)
+        self.core.applet.autosize_window(tooltip).into()
     }
 
     fn view_window(&self, _id: Id) -> Element<'_, Message> {
