@@ -178,7 +178,7 @@ impl cosmic::Application for Applet {
                     },
                     Some(Box::new(|state: &Applet| {
                         let contenu = container(vue::panneau(state)).width(Length::Fill).padding(8);
-                        Element::from(state.core.applet.popup_container(contenu)).map(cosmic::Action::App)
+                        Element::from(fond_transparent(contenu)).map(cosmic::Action::App)
                     })),
                 )),
             });
@@ -199,6 +199,35 @@ impl cosmic::Application for Applet {
     fn style(&self) -> Option<cosmic::iced::theme::Style> {
         Some(cosmic::applet::style())
     }
+}
+
+static FENETRE_ID: std::sync::LazyLock<cosmic::widget::Id> =
+    std::sync::LazyLock::new(|| cosmic::widget::Id::new("fenetre-discord"));
+
+/// Comme popup_container de libcosmic, mais fond toujours un peu transparent
+/// (libcosmic ne le fait que si le flou est activé dans le thème).
+fn fond_transparent<'a>(contenu: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    use cosmic::iced::{Border, Color, Limits};
+    let fond = container(contenu).class(cosmic::theme::Container::custom(|theme| {
+        let cosmic = theme.cosmic();
+        let arriere = cosmic.background(false);
+        let mut couleur: Color = arriere.base.into();
+        couleur.a = 0.8;
+        container::Style {
+            text_color: Some(arriere.on.into()),
+            icon_color: Some(arriere.on.into()),
+            background: Some(couleur.into()),
+            border: Border {
+                radius: cosmic.corner_radii.radius_m.into(),
+                width: 1.0,
+                color: arriere.divider.into(),
+            },
+            ..Default::default()
+        }
+    }));
+    cosmic::widget::autosize::autosize(fond, FENETRE_ID.clone())
+        .limits(Limits::NONE.min_height(1.0).min_width(360.0).max_width(360.0).max_height(1000.0))
+        .into()
 }
 
 fn main() -> cosmic::iced::Result {
