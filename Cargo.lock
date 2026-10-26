@@ -923,6 +923,7 @@ dependencies = [
 name = "cosmic-discord-applet"
 version = "0.1.0"
 dependencies = [
+ "image",
  "libcosmic",
  "serde_json",
  "tokio",

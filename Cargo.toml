@@ -7,3 +7,4 @@ edition = "2024"
 libcosmic = { git = "https://github.com/pop-os/libcosmic", default-features = false, features = ["applet-token", "dbus-config"] }
 serde_json = "1"
 tokio = { version = "1", features = ["process", "io-util", "time"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

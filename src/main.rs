@@ -8,8 +8,9 @@ use cosmic::app::{Core, Task};
 use cosmic::iced::window::Id;
 use cosmic::iced::{Length, Rectangle, Subscription};
 use cosmic::surface::action::{app_popup, destroy_popup};
-use cosmic::widget::container;
+use cosmic::widget::{container, image};
 use cosmic::Element;
+use std::collections::HashMap;
 use std::time::Duration;
 
 const ID: &str = "fr.chloe.CosmicDiscordApplet";
@@ -28,10 +29,14 @@ struct Applet {
     expanded_participant: Option<String>,
     /// Current time (seconds since 1970), for the call duration.
     now: i64,
-    /// Avatar shown on the panel icon (path of whoever is speaking).
-    shown_speaker: Option<String>,
-    /// Bumped on every speaker change, so an old hold timer can't hide a new speaker.
-    speaker_generation: u64,
+    /// Avatars for the panel, by file path: (color, grayscale).
+    avatars: HashMap<String, (image::Handle, image::Handle)>,
+    /// People who just stopped speaking, still shown in color for a moment: id → hold generation.
+    speaking_hold: HashMap<String, u64>,
+    /// Who was speaking in the previous bridge state.
+    was_speaking: Vec<String>,
+    /// Bumped on every new hold, so an old hold timer can't end a newer one.
+    hold_generation: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -46,7 +51,7 @@ enum Message {
     VolumeReleased,
     LaunchDiscord,
     Tick,
-    SpeakerHoldEnded(u64),
+    SpeakingHoldEnded(String, u64),
     None,
 }
 
@@ -56,74 +61,131 @@ fn now() -> i64 {
         .map_or(0, |d| d.as_secs() as i64)
 }
 
-impl Applet {
-    /// Who is speaking right now (others first, otherwise me), like the Quickshell bar.
-    fn current_speaker(&self) -> Option<String> {
-        let state = self.state.as_ref().filter(|s| s.channel.is_some())?;
-        let talking: Vec<_> = state.participants.iter().filter(|p| p.speaking).collect();
-        talking
-            .iter()
-            .find(|p| p.id != state.self_id)
-            .or(talking.first())
-            .map(|p| p.avatar.clone())
-    }
+/// Most people in a call shown on the panel; the rest becomes "+N".
+const MAX_PANEL_AVATARS: usize = 5;
 
-    /// The avatar stays a moment after the sentence ends, otherwise it would flicker between words.
-    fn update_speaker(&mut self) -> Task<Message> {
-        match self.current_speaker() {
-            Some(avatar) => {
-                if self.shown_speaker.as_ref() != Some(&avatar) {
-                    self.speaker_generation += 1;
-                    self.shown_speaker = Some(avatar);
+/// Discord logo for the panel when not in a call (tinted like the other panel icons).
+const DISCORD_ICON: &[u8] = include_bytes!("../assets/discord-symbolic.svg");
+
+/// Loads an avatar in color and in grayscale (grayscale = not speaking).
+fn load_avatar(path: &str) -> Option<(image::Handle, image::Handle)> {
+    let color = ::image::open(path).ok()?.to_rgba8();
+    let (width, height) = color.dimensions();
+    let mut gray = color.clone();
+    for pixel in gray.pixels_mut() {
+        let [r, g, b, a] = pixel.0;
+        let luma = (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) as u8;
+        pixel.0 = [luma, luma, luma, a];
+    }
+    Some((
+        image::Handle::from_rgba(width, height, color.into_raw()),
+        image::Handle::from_rgba(width, height, gray.into_raw()),
+    ))
+}
+
+impl Applet {
+    fn load_avatars(&mut self) {
+        let Some(state) = &self.state else { return };
+        for p in &state.participants {
+            if !p.avatar.is_empty() && !self.avatars.contains_key(&p.avatar) {
+                if let Some(handles) = load_avatar(&p.avatar) {
+                    self.avatars.insert(p.avatar.clone(), handles);
                 }
             }
-            None if self.shown_speaker.is_some() => {
-                self.speaker_generation += 1;
-                let generation = self.speaker_generation;
-                return cosmic::task::future(async move {
-                    tokio::time::sleep(Duration::from_millis(800)).await;
-                    Message::SpeakerHoldEnded(generation)
-                });
-            }
-            None => {}
         }
-        Task::none()
     }
 
-    /// Panel button: speaker avatar with an accent ring, otherwise the headset icon (accent while in a call).
+    /// Someone who stops speaking stays in color a moment, otherwise they would flicker between words.
+    fn update_speaking(&mut self) -> Task<Message> {
+        let speaking: Vec<String> = self
+            .state
+            .iter()
+            .flat_map(|s| s.participants.iter())
+            .filter(|p| p.speaking)
+            .map(|p| p.id.clone())
+            .collect();
+        let mut tasks = Vec::new();
+        for id in &self.was_speaking {
+            if !speaking.contains(id) {
+                self.hold_generation += 1;
+                let (id, generation) = (id.clone(), self.hold_generation);
+                self.speaking_hold.insert(id.clone(), generation);
+                tasks.push(cosmic::task::future(async move {
+                    tokio::time::sleep(Duration::from_millis(800)).await;
+                    Message::SpeakingHoldEnded(id, generation)
+                }));
+            }
+        }
+        for id in &speaking {
+            self.speaking_hold.remove(id);
+        }
+        self.was_speaking = speaking;
+        Task::batch(tasks)
+    }
+
+    /// Panel button: Discord logo out of a call; in a call, everyone's avatar,
+    /// gray when silent and in color with an accent ring while speaking.
     fn panel_button(&self) -> cosmic::widget::Button<'_, Message> {
-        use cosmic::iced::{Border, Color};
-        use cosmic::widget::{icon, image};
+        use cosmic::iced::widget::{Column, Row};
+        use cosmic::iced::{Alignment, Border, Color};
+        use cosmic::widget::{icon, image, text};
         let size = self.core.applet.suggested_size(true).0 as f32;
-        let in_call = self.state.as_ref().is_some_and(|s| s.channel.is_some());
-        let content: Element<'_, Message> = match self.shown_speaker.as_deref().filter(|a| !a.is_empty()) {
-            Some(avatar) => container(
-                image(image::Handle::from_path(avatar))
-                    .width(Length::Fixed(size - 4.0))
-                    .height(Length::Fixed(size - 4.0))
-                    .border_radius((size - 4.0) / 2.0),
-            )
-            .padding(2)
-            .class(cosmic::theme::Container::custom(move |t| container::Style {
-                border: Border { color: t.cosmic().accent_color().into(), width: 2.0, radius: (size / 2.0).into() },
-                ..Default::default()
-            }))
-            .into(),
-            _ => icon::from_name("audio-headset-symbolic")
-                .size(size as u16)
+        let call = self.state.as_ref().filter(|s| s.channel.is_some());
+        let Some(state) = call.filter(|s| !s.participants.is_empty()) else {
+            let logo = icon::from_svg_bytes(DISCORD_ICON)
+                .symbolic(true)
                 .icon()
-                .class(cosmic::theme::Svg::custom(move |t| cosmic::iced::widget::svg::Style {
-                    color: Some(if in_call {
-                        t.cosmic().accent_color().into()
-                    } else {
-                        Color::from(t.cosmic().background(false).on)
-                    }),
+                .class(cosmic::theme::Svg::custom(|t| cosmic::iced::widget::svg::Style {
+                    color: Some(Color::from(t.cosmic().background(false).on)),
                 }))
                 .width(Length::Fixed(size))
-                .height(Length::Fixed(size))
-                .into(),
+                .height(Length::Fixed(size));
+            return self.core.applet.button_from_element(logo, true);
         };
-        self.core.applet.button_from_element(content, true)
+
+        let inner = size - 4.0;
+        let mut avatars: Vec<Element<'_, Message>> = Vec::new();
+        for p in state.participants.iter().take(MAX_PANEL_AVATARS) {
+            let colored = p.speaking || self.speaking_hold.contains_key(&p.id);
+            let picture: Element<'_, Message> = match self.avatars.get(&p.avatar) {
+                Some((color, gray)) => image(if colored { color.clone() } else { gray.clone() })
+                    .width(Length::Fixed(inner))
+                    .height(Length::Fixed(inner))
+                    .border_radius(inner / 2.0)
+                    .into(),
+                None => icon::from_name("avatar-default-symbolic").size(inner as u16).into(),
+            };
+            avatars.push(container(picture).padding(2).class(cosmic::theme::Container::custom(
+                move |t| container::Style {
+                    border: Border {
+                        color: if colored { t.cosmic().accent_color().into() } else { Color::TRANSPARENT },
+                        width: 2.0,
+                        radius: (size / 2.0).into(),
+                    },
+                    ..Default::default()
+                },
+            )).into());
+        }
+        let hidden = state.participants.len().saturating_sub(MAX_PANEL_AVATARS);
+        if hidden > 0 {
+            avatars.push(text::caption(format!("+{hidden}")).into());
+        }
+        // Like libcosmic's button_from_element, but grows with the number of avatars
+        let applet = &self.core.applet;
+        let (major_padding, minor_padding) = applet.suggested_padding(true);
+        let thickness = Length::Fixed(size + 2.0 * minor_padding as f32);
+        let content: Element<'_, Message> = if applet.is_horizontal() {
+            Row::with_children(avatars).spacing(4).align_y(Alignment::Center).into()
+        } else {
+            Column::with_children(avatars).spacing(4).align_x(Alignment::Center).into()
+        };
+        let button = cosmic::widget::button::custom(cosmic::widget::layer_container(content).center(Length::Shrink))
+            .class(cosmic::theme::Button::AppletIcon);
+        if applet.is_horizontal() {
+            button.height(thickness).padding([0, major_padding])
+        } else {
+            button.width(thickness).padding([major_padding, 0])
+        }
     }
 }
 
@@ -163,11 +225,12 @@ impl cosmic::Application for Applet {
                     self.dragged_volume = None;
                     self.volume_released = false;
                 }
-                return self.update_speaker();
+                self.load_avatars();
+                return self.update_speaking();
             }
-            Message::SpeakerHoldEnded(generation) => {
-                if generation == self.speaker_generation {
-                    self.shown_speaker = None;
+            Message::SpeakingHoldEnded(id, generation) => {
+                if self.speaking_hold.get(&id) == Some(&generation) {
+                    self.speaking_hold.remove(&id);
                 }
             }
             Message::Command(arguments) => {
