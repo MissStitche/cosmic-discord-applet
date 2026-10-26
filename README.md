@@ -14,5 +14,5 @@ Puis Paramètres > Bureau > Panneau > Applets > ajouter « Discord (widget) ».
 ## Mettre à jour
 
 ```sh
-~/.local/bin/cosmic-discord-applet-maj
+~/.local/bin/cosmic-discord-applet-update
 ```
