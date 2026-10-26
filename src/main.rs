@@ -28,6 +28,10 @@ struct Applet {
     expanded_participant: Option<String>,
     /// Current time (seconds since 1970), for the call duration.
     now: i64,
+    /// Avatar shown on the panel icon (path of whoever is speaking).
+    shown_speaker: Option<String>,
+    /// Bumped on every speaker change, so an old hold timer can't hide a new speaker.
+    speaker_generation: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -42,6 +46,7 @@ enum Message {
     VolumeReleased,
     LaunchDiscord,
     Tick,
+    SpeakerHoldEnded(u64),
     None,
 }
 
@@ -49,6 +54,77 @@ fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64)
+}
+
+impl Applet {
+    /// Who is speaking right now (others first, otherwise me), like the Quickshell bar.
+    fn current_speaker(&self) -> Option<String> {
+        let state = self.state.as_ref().filter(|s| s.channel.is_some())?;
+        let talking: Vec<_> = state.participants.iter().filter(|p| p.speaking).collect();
+        talking
+            .iter()
+            .find(|p| p.id != state.self_id)
+            .or(talking.first())
+            .map(|p| p.avatar.clone())
+    }
+
+    /// The avatar stays a moment after the sentence ends, otherwise it would flicker between words.
+    fn update_speaker(&mut self) -> Task<Message> {
+        match self.current_speaker() {
+            Some(avatar) => {
+                if self.shown_speaker.as_ref() != Some(&avatar) {
+                    self.speaker_generation += 1;
+                    self.shown_speaker = Some(avatar);
+                }
+            }
+            None if self.shown_speaker.is_some() => {
+                self.speaker_generation += 1;
+                let generation = self.speaker_generation;
+                return cosmic::task::future(async move {
+                    tokio::time::sleep(Duration::from_millis(800)).await;
+                    Message::SpeakerHoldEnded(generation)
+                });
+            }
+            None => {}
+        }
+        Task::none()
+    }
+
+    /// Panel button: speaker avatar with an accent ring, otherwise the headset icon (accent while in a call).
+    fn panel_button(&self) -> cosmic::widget::Button<'_, Message> {
+        use cosmic::iced::{Border, Color};
+        use cosmic::widget::{icon, image};
+        let size = self.core.applet.suggested_size(true).0 as f32;
+        let in_call = self.state.as_ref().is_some_and(|s| s.channel.is_some());
+        let content: Element<'_, Message> = match self.shown_speaker.as_deref().filter(|a| !a.is_empty()) {
+            Some(avatar) => container(
+                image(image::Handle::from_path(avatar))
+                    .width(Length::Fixed(size - 4.0))
+                    .height(Length::Fixed(size - 4.0))
+                    .border_radius((size - 4.0) / 2.0),
+            )
+            .padding(2)
+            .class(cosmic::theme::Container::custom(move |t| container::Style {
+                border: Border { color: t.cosmic().accent_color().into(), width: 2.0, radius: (size / 2.0).into() },
+                ..Default::default()
+            }))
+            .into(),
+            _ => icon::from_name("audio-headset-symbolic")
+                .size(size as u16)
+                .icon()
+                .class(cosmic::theme::Svg::custom(move |t| cosmic::iced::widget::svg::Style {
+                    color: Some(if in_call {
+                        t.cosmic().accent_color().into()
+                    } else {
+                        Color::from(t.cosmic().background(false).on)
+                    }),
+                }))
+                .width(Length::Fixed(size))
+                .height(Length::Fixed(size))
+                .into(),
+        };
+        self.core.applet.button_from_element(content, true)
+    }
 }
 
 impl cosmic::Application for Applet {
@@ -86,6 +162,12 @@ impl cosmic::Application for Applet {
                 if self.volume_released {
                     self.dragged_volume = None;
                     self.volume_released = false;
+                }
+                return self.update_speaker();
+            }
+            Message::SpeakerHoldEnded(generation) => {
+                if generation == self.speaker_generation {
+                    self.shown_speaker = None;
                 }
             }
             Message::Command(arguments) => {
@@ -142,9 +224,7 @@ impl cosmic::Application for Applet {
     fn view(&self) -> Element<'_, Message> {
         let popup = self.popup;
         let btn = self
-            .core
-            .applet
-            .icon_button("audio-headset-symbolic")
+            .panel_button()
             .on_press_with_rectangle(move |offset, bounds| match popup {
                 // Popup already open: a click closes it.
                 Some(id) => Message::Surface(destroy_popup(id)),
