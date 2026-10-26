@@ -167,7 +167,9 @@ fn participant_row<'a>(applet: &Applet, state: &State, p: &'a Participant) -> li
         .width(Length::Fill)
         .class(if speaking { theme::Text::Accent } else { theme::Text::Default });
     let mut participant = row().spacing(10).push(avatar).push(name);
-    let status_icon = if p.deafened {
+    let status_icon = if p.locally_muted {
+        Some("audio-volume-muted-symbolic")
+    } else if p.deafened {
         Some("audio-volume-muted-symbolic")
     } else if p.muted {
         Some("microphone-sensitivity-muted-symbolic")
@@ -192,8 +194,22 @@ fn volume_row<'a>(applet: &Applet, state: &State, p: &Participant) -> Element<'a
         _ => p.volume,
     };
     let max = if is_self { 100.0 } else { 200.0 };
+    // Mute button: my mic for me, local mute (only I stop hearing them) for others
+    let (muted, mute_command) = if is_self {
+        (state.mic_muted, command(&["set_mute", if state.mic_muted { "false" } else { "true" }]))
+    } else {
+        (p.locally_muted, command(&["set_user_mute", &p.id, if p.locally_muted { "false" } else { "true" }]))
+    };
+    let mute_icon = match (is_self, muted) {
+        (true, true) => "microphone-sensitivity-muted-symbolic",
+        (true, false) => "audio-input-microphone-symbolic",
+        (false, true) => "audio-volume-muted-symbolic",
+        (false, false) => "audio-volume-high-symbolic",
+    };
+    let mute_button = button::icon(icon::from_name(mute_icon)).selected(muted).on_press(mute_command);
     row()
         .padding([0, 4])
+        .push(mute_button)
         .push(slider(0.0..=max, value, move |v| Message::Volume(key.clone(), v)).on_release(Message::VolumeReleased))
         .push(text::caption(format!("{} %", value.round())).width(Length::Fixed(42.0)).align_x(Alignment::End))
         .into()

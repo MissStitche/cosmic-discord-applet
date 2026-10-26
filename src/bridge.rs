@@ -46,6 +46,8 @@ pub struct Participant {
     pub speaking: bool,
     pub muted: bool,
     pub deafened: bool,
+    /// Muted for me only (I don't hear them anymore).
+    pub locally_muted: bool,
 }
 
 /// The bridge lives in the same folder as the applet.
@@ -92,6 +94,7 @@ fn parse_snapshot(line: &str) -> Option<State> {
                 speaking: flag("speaking"),
                 muted: flag("mute") || flag("self_mute"),
                 deafened: flag("deaf") || flag("self_deaf"),
+                locally_muted: flag("local_mute"),
             }
         })
         .collect();
